@@ -2883,6 +2883,33 @@ function! s:StatusProcess(result, stat) abort
   endtry
 endfunction
 
+" GVim may not need special colorscheme initially (since I happened to like the default look)
+" but after getting back to 'default' the colorscheme looks awful so instead start with the
+" colorscheme CSApproxSnapshot2 from .vimrc - i.e. in my case we'll always have g:colors_name
+if exists('g:colors_name')
+  " cache some stuff first at the top level of the script
+  let s:colorscheme_pre = g:colors_name
+  let s:hl_list_normal = hlget('Normal', v:true)
+
+" create hl group 'PreviewNormal'
+  let s:hl_list_normal[0].name = 'PreviewNormal'
+" NOTE: if we call hlset() here it gets cleared later, probably when 'colorscheme' is called
+" call hlset(s:hl_list_normal)
+endif
+
+let s:hl_saved = [] " checked for empty() later
+
+function! s:ApplyCachedHighlights(winid) abort
+  if exists('s:hl_saved') && !empty(s:hl_saved)
+    for grp in s:hl_saved
+      call hlset(grp)
+    endfor
+    " use hl group 'PreviewNormal' to update the window
+    call hlset(s:hl_list_normal)
+    call win_execute(a:winid, 'setlocal wincolor=PreviewNormal')
+  endif
+endfunction
+
 function! s:StatusRender(stat) abort
   try
     let stat = a:stat
@@ -3075,6 +3102,17 @@ function! fugitive#BufReadStatus(cmdbang) abort
     call s:MapStatus()
 
     call s:StatusRender(stat)
+
+    " TODO: maybe this can be done as part of 'User FugitiveIndex' autocmd?
+    " this if block is called if calling :Git! from one of the diff windows
+    if exists('b:fugitive_type') &&  b:fugitive_type == 'index'
+      if !exists('s:status_win_id')
+        let s:status_win_id = win_getid()
+      endif
+      if exists('g:colors_name') && g:colors_name == 'github'
+        call s:ApplyCachedHighlights(s:status_win_id)
+      endif
+    endif
 
     doautocmd <nomodeline> BufReadPost
     if &bufhidden ==# ''
@@ -6587,10 +6625,69 @@ function! s:diff_window_count() abort
   return c
 endfunction
 
+" WARN: this has to be done at the top level scope to get the correct result, see:
+" https://stackoverflow.com/questions/4976776/how-to-get-path-to-the-current-vimscript-being-executed
+let s:script_dirname = expand('<script>:p:h')
+
+" make diff windows appear more like github and also cache some settings in order to revert as
+" required (NOTE: we have to do that here rather than as part of :Git! command because by then
+" the colorscheme may have been changed already following :Gdiff, etc)
+function! s:github_look_on() abort
+  " save the current colorscheme and fugitive specific highlight details as long as
+  " the current colorscheme is not github
+  if g:colors_name != 'github'
+    let s:colorscheme_pre = g:colors_name
+
+    " FIXME: maybe give a warning if file not found?
+    let s:syntax_filename = resolve(s:script_dirname .. s:VimSlash("/../syntax/fugitive.vim"))
+
+    " checking for empty(s:hl_saved) ensures that this block runs only once
+    if empty(s:hl_saved) && filereadable(s:syntax_filename)
+      " we have to force the fugitive syntax to be loaded first
+      let s:current_type = &filetype
+      setlocal filetype=fugitive
+
+      " now that the filetype event has occured we can cache the fugitive syntax highlights
+      for line in readfile(s:syntax_filename)
+        " get the string up to the highlight group name
+        let subline = matchstr(line, '^\s*hi\w*\s\+\(def\w*\)*\s\+link\s\+fugitive\w\+')
+        if subline == ''
+          continue " ignore if the line isn't relavant
+        endif
+        " remove the front part to get the highlight group name
+        let tmp = hlget(substitute(subline, '^\s*hi\w*\s\+\(def\w*\)*\s\+link\s\+', '', ''), v:true)
+        if !empty(tmp)
+          " WARN: guibg is set to 'bg' which gets changed by colorscheme github;
+          "       a hackgy workaround is to use the color we fetch from 'Normal' earlier
+          let tmp[0].guibg = s:hl_list_normal[0].guibg
+          call add(s:hl_saved, tmp)
+        endif
+        unlet tmp
+      endfor
+
+      exe 'setlocal filetype=' .. s:current_type
+      unlet s:current_type
+    endif
+
+    colorscheme github
+  endif
+endfunction
+
 function! s:diffthis() abort
   if !&diff
     let w:fugitive_diff_restore = 1
     diffthis
+  endif
+endfunction
+
+" get back to the previous appearance - set the previously saved colorscheme but it seems that
+" we don't have to clear the temporary highlights set with hlset()
+function! s:github_look_off() abort
+  if exists('s:colorscheme_pre')
+  " let g:colors_name = s:colorscheme_pre " FIXME: not sure why this doesn't work
+    exe 'colorscheme ' ..  s:colorscheme_pre
+    " change colorscheme only once
+    unlet s:colorscheme_pre
   endif
 endfunction
 
@@ -6610,6 +6707,8 @@ function! s:diffoff_all(dir) abort
     execute curwin.'wincmd w'
   endif
   diffoff!
+
+  call s:github_look_off()
 endfunction
 
 function! s:IsConflicted() abort
@@ -6733,6 +6832,8 @@ function! fugitive#Diffsplit(autodir, keepfocus, mods, arg, ...) abort
     endif
     exe pre
     let w:fugitive_diff_restore = 1
+
+    call s:github_look_on()
     let mods = (autodir ? s:DiffModifier(2, empty(args) || args[0] =~# '^>') : '') . mods
     if &diffopt =~# 'vertical'
       let diffopt = &diffopt
@@ -6744,6 +6845,15 @@ function! fugitive#Diffsplit(autodir, keepfocus, mods, arg, ...) abort
     if getwinvar('#', '&diff')
       if a:keepfocus
         exe back
+      endif
+
+      " to update the syntax highlighting in the status window, we probably have to first
+      " check if there is one and then loop through all the windows to get to the preview
+      " window and apply the custom highlights, then finally get back to the originating window
+      "
+      " however we cheat here using s:status_win_id
+      if exists('s:status_win_id') && g:colors_name == 'github'
+        call s:ApplyCachedHighlights(s:status_win_id)
       endif
     endif
     return post

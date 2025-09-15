@@ -4232,7 +4232,13 @@ function! s:StatusCommand(line1, line2, range, count, bang, mods, reg, arg, args
     if a:count ==# 0
       return mods . 'edit' . (a:bang ? '!' : '') . arg
     elseif a:bang
-      return mods . 'pedit' . arg . '|wincmd P'
+      if has('gui_running') && has('win32')
+        " a hacky workaround for GVim to defer 'wincmd P' using autocmd BufEnter
+        let s:focus_preview_window_event = v:true
+        return mods . 'pedit' . arg
+      else
+        return mods . 'pedit' . arg . '|wincmd P'
+      endif
     else
       return mods . 'keepalt split' . arg
     endif
@@ -6552,6 +6558,14 @@ augroup fugitive_diff
   autocmd BufWinEnter * nested
         \ if s:can_diffoff(+expand('<abuf>')) && s:diff_window_count() == 1 |
         \   call s:diffoff() |
+        \ endif
+  " a hack to getaround the issue where GVim treats ' ' and '|' characters
+  " and any following characters as part of a path, see:
+  "   https://github.com/tpope/vim-fugitive/issues/2427
+  autocmd BufEnter * nested
+        \ if exists('s:focus_preview_window_event') && !&previewwindow |
+        \   exe 'wincmd P' |
+        \   unlet s:focus_preview_window_event |
         \ endif
 augroup END
 

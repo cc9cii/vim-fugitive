@@ -6591,6 +6591,22 @@ augroup fugitive_diff
         \ if s:can_diffoff(+expand('<abuf>')) && s:diff_window_count() == 1 |
         \   call s:diffoff() |
         \ endif
+  " FIXME: we need to save the winid and call from fugitive#Diffsplit()
+  "        in order to update highlights of an existing help window
+  "
+  "        :echom synIDattr(synID(line('.'), col('.'), 1), "name")
+  "        helpStar
+  "        helpVim
+  "        helpSpecial
+  "        helpHeader
+  "        helpHyperTextEntry
+  "        helpHyperTextJump
+  "
+  autocmd filetype help
+        \ if exists('g:colors_name') && g:colors_name == 'github' |
+        \   call hlset(s:hl_list_normal) |
+        \   call win_execute(win_getid(), 'setlocal wincolor=PreviewNormal') |
+        \ endif
 augroup END
 
 function! s:can_diffoff(buf) abort

@@ -6553,6 +6553,20 @@ augroup fugitive_diff
         \ if s:can_diffoff(+expand('<abuf>')) && s:diff_window_count() == 1 |
         \   call s:diffoff() |
         \ endif
+  " NOTE: exiting from :Gdiff and :Git! dd
+  "     - this workaround tries to detect if we have entered the window of the git parent with
+  "       which we were doing diff (via the existence of s:git_parent_bufnr from s:diffoff_all())
+  "     - this situation should occur if we exited the diff from the working tree buffer window
+  "     - we also don't want to change buffers if we are still in diff mode (but probably not
+  "       necessary to check as it should never happen?)
+  autocmd WinEnter *
+        \ if exists('s:git_parent_bufnr') && bufnr('%') == s:git_parent_bufnr |
+        \   if !s:can_diffoff(+expand('<abuf>')) |
+        \     let orig_bufnr = bufnr(s:orig_bufname) |
+        \     exe 'buf'.orig_bufnr |
+        \     unlet s:git_parent_bufnr |
+        \   endif |
+        \ endif
 augroup END
 
 function! s:can_diffoff(buf) abort
@@ -6601,12 +6615,40 @@ endfunction
 
 function! s:diffoff_all(dir) abort
   let curwin = winnr()
+  let orig_winnr = -1
   for nr in range(1,winnr('$'))
     if getwinvar(nr, '&diff') && !empty(getwinvar(nr, 'fugitive_diff_restore'))
       call setwinvar(nr, 'fugitive_diff_restore', '')
+
+      let winid = win_getid(nr)
+      if winid == s:orig_winid     "FIXME: maybe should check if it exists
+        let orig_winnr = nr        " for use below
+      else
+        " WARN: this logic of "if not original window then must have been the git parent"
+        "       only works because s:diffoff_all() is called only if there are 2 diff windows
+        "       (see autucmd BufWinLeave)
+        let s:git_parent_bufnr = winbufnr(nr) " for use in autocmd WinEnter
+      endif
+
     endif
   endfor
-  if curwin != winnr()
+
+  " NOTE: exiting from :Gdiff and :Git! dd
+  "     - if we exit from the git parent buffer/window we have to change the window to
+  "       the original one else for some reason Signify is not enabled / refreshed
+  "       (see below execute orig_winnr.'wincmd w')
+  "     - exiting from the original buffer/window somehow results in the current buffer in
+  "       this function to be from the git archive - so we have to change to that window
+  "       and then change the buffer to the one we saved originally
+  "     - however newer version of Vim won't allow that; so we swap buffers when we enter the
+  "       git parent window (via autocmd WinEnter) after closing the orignal window
+  "
+  "         E1546: Cannot switch to a closing buffer
+  "         patch 9.1.1361: [security]: possible use-after-free when closing a buffer
+  "
+  if curwin != orig_winnr && orig_winnr != -1 " probably exiting from git parent window
+    execute orig_winnr.'wincmd w'
+  elseif curwin != winnr()                    " FIXME: not sure if this ever happens
     execute curwin.'wincmd w'
   endif
   diffoff!
@@ -6738,6 +6780,17 @@ function! fugitive#Diffsplit(autodir, keepfocus, mods, arg, ...) abort
       let diffopt = &diffopt
       set diffopt-=vertical
     endif
+
+    " NOTE: exiting from :Gdiff and :Git! dd
+    "     - remember the winid for autocmd BufWinLeave which calls s:diffoff_all()
+    "     - also remember the bufname for autocmd WinEnter but the bufnames
+    "       seem to be the same whether :Gdiff was used or 'dd' was used from :Git! preview
+    " WARN: bufname('#') can be at this point empty so don't use it!
+    "       if this fuction is called with 'keepalt' bufname('#') will be the
+    "       git buffer name (if called from :Gdiffsplit it will be empty)
+    let s:orig_bufname = bufname('%') " for use in autocmd WinEnter
+    let s:orig_winid = win_getid()    " for use in s:diffoff_all()
+
     execute mods 'diffsplit' s:fnameescape(spec)
     let w:fugitive_diff_restore = 1
     let winnr = winnr()

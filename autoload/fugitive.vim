@@ -3189,9 +3189,7 @@ function! fugitive#BufReadStatus(cmdbang) abort
     " TODO: maybe this can be done as part of 'User FugitiveIndex' autocmd?
     " this if block is called if calling :Git! from one of the diff windows
     if exists('b:fugitive_type') &&  b:fugitive_type == 'index'
-      if !exists('s:status_win_id')
-        let s:status_win_id = win_getid()
-      endif
+      let s:status_win_id = win_getid()
       if exists('g:colors_name') && g:colors_name == 'github'
         call s:ApplyCachedHighlights(s:status_win_id)
       endif

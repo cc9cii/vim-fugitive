@@ -3093,6 +3093,7 @@ function! s:StatusRender(stat) abort
         endfor
       endfor
     endif
+
     " moved Unstaged and Staged sections before Untracked, etc, to get the old behaviour
     " FIXME: probably should add a global user variable to change between old/new
     call s:AddDiffSection(to, stat, 'Unstaged', unstaged)
@@ -3193,6 +3194,12 @@ function! fugitive#BufReadStatus(cmdbang) abort
       endif
       if exists('g:colors_name') && g:colors_name == 'github'
         call s:ApplyCachedHighlights(s:status_win_id)
+      endif
+
+      " hack to fix the diff alignment after :Git!
+      let windows = win_findbuf(bufnr('#'))
+      if !empty(windows)
+        silent! call win_execute(windows[0], 'normal! <C-Y>', 'silent') " another hack
       endif
     endif
 

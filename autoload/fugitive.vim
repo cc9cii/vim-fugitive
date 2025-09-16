@@ -4620,10 +4620,12 @@ augroup fugitive_status
   autocmd TabEnter *
         \ call s:ReloadTabStatus()
   " FIXME: doesn't update until the focus is changed to the status window
+  " NOTE: call s:ReloadStatusBuffer() won't update the status window if the working directory
+  "       is changed from another buffer
   " NOTE: call s:ExpireStatus(-1) can be used instead but the status won't be updated if the
   "       focus is already on the status window
   autocmd DirChanged *
-        \ call s:ReloadStatusBuffer()
+        \ call s:ReloadStatus()
 augroup END
 
 function! s:StatusSectionFile(heading, filename) abort

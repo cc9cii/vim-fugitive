@@ -3201,6 +3201,11 @@ function! fugitive#BufReadStatus(cmdbang) abort
       if !empty(windows)
         silent! call win_execute(windows[0], 'normal! <C-Y>', 'silent') " another hack
       endif
+
+      if &previewwindow
+        " FIXME: mapping hidden deep inside the code; maybe execute only if a global var exists
+        nnoremap <buffer> <silent> q :q<CR>
+      endif
     endif
 
     doautocmd <nomodeline> BufReadPost

@@ -2678,6 +2678,25 @@ let s:rebase_abbrevs = {
       \ 'b': 'break',
       \ }
 
+function! s:ToggleShowRelPath(lnum) abort
+  " we only allow showing relative paths in the git status window
+  if get(b:, 'fugitive_type', '') !=# 'index'
+    return
+  endif
+
+  setlocal noreadonly modifiable
+  if b:show_relative_path == 1
+    let b:show_relative_path = 0
+  else
+    let b:show_relative_path = 1
+  endif
+  call s:ReloadStatusBuffer()
+  setlocal nomodified readonly nomodifiable
+
+  " TODO: don't understand why returning a:lnum is needed to keep the cursor position
+  return a:lnum
+endfunction
+
 function! s:MapStatus() abort
   call fugitive#MapJumps()
   call s:Map('n', '-', ":<C-U>execute <SID>Do('Toggle',0)<CR>", '<silent>')
@@ -2717,6 +2736,7 @@ function! s:MapStatus() abort
   call s:Map('x', 'I', ":<C-U>execute <SID>StagePatch(line(\"'<\"),line(\"'>\"), 1)<CR>", '<silent>')
   call s:Map('n', 'gq', ":<C-U>if bufnr('$') == 1<Bar>quit<Bar>else<Bar>bdelete<Bar>endif<CR>", '<silent>')
   call s:Map('n', 'R', ":echohl WarningMsg<Bar>echo 'Reloading is automatic.  Use :e to force'<Bar>echohl NONE<CR>", '<silent>')
+  call s:Map('n', 'r', ":<C-U>execute <SID>ToggleShowRelPath(line('.'))<CR>", '<silent>')
   call s:Map('n', 'g<Bar>', ":<C-U>echoerr 'Changed to X'<CR>", '<silent><unique>')
   call s:Map('x', 'g<Bar>', ":<C-U>echoerr 'Changed to X'<CR>", '<silent><unique>')
   call s:Map('n', 'X', ":<C-U>execute <SID>StageDelete(line('.'), 0, v:count)<CR>", '<silent>')
@@ -3013,6 +3033,66 @@ function! s:StatusRender(stat) abort
       call s:AddHeader(to, 'Help', 'g?')
     endif
 
+    " FIXME: not very efficient to check this each time s:StatusRender() is called
+    if !exists('b:show_relative_path')
+      let b:show_relative_path =  exists('g:status_relative_path') ? 1 : 0
+    endif
+
+    " FIXME: this if block should be a function rather than polluting s:StatusRender()
+    if b:show_relative_path == 1
+      if exists('g:status_relative_path_only_staged_unstaged')
+        let groups = [ unstaged, staged ]
+      else
+        let groups = [ unstaged, staged, rebasing, untracked ]
+      endif
+
+      let current_work_dir = getcwd()
+      let git_dir = s:Tree(FugitiveGitDir())
+      " WARN: assumes '/' or '\' characters are 1 byte each
+      let cwd_rel_to_git_root = substitute(current_work_dir[strlen(git_dir) + 1:], '\\', '/', 'g')
+      let parent_dirs = split(cwd_rel_to_git_root, '/')
+      let max_dot_dot = ""
+      for parent in parent_dirs
+        let max_dot_dot = max_dot_dot .. '../'
+      endfor
+
+      for files in groups
+        for file in files
+          " NOTE: doesn't work if cwd is outside the git tree (can be made to work but there is no
+          "       benefit, and git client errors for the same senario anyway)
+          " since file.filename should start at the base of the tree we remove from it any of the
+          " common parent directories in parent_list and replace each of the remaining parent
+          " directories with '../'
+          let rel_filename = file.filename
+          let num_matches = 0
+          let element_index = 0 " NOTE: list incices start at 0
+          for parent in parent_dirs
+            " NOTE: -1 is needed because the indices start at 0
+            "       +1 is to skip the directory separator and start at the next directory
+            "
+            "       file.filename: extern/nibtogre/nimodel.cpp
+            " cwd_rel_to_git_root: extern/esm4
+            "                      ^    ^ ^        5 = strlen(parent_dirs[0]) - 1
+            "                      |    | |        7 = strlen(parent_dirs[0]) + 1
+            "               index: 0    5 7
+            if parent ==# rel_filename[ : strlen(parent_dirs[element_index]) - 1]
+              let rel_filename = rel_filename[strlen(parent_dirs[element_index]) + 1 : ]
+              let num_matches += 1
+            else
+              break " no need to continue
+            endif
+            let element_index += 1
+          endfor
+
+          " since we have 1 match we end up with ../nibtogre/nimodel.cpp
+          " if there were no matches it will be something like ../../apps/openmw/engine.cpp
+          " i.e. one '../' for each of the two non-matches
+          "
+          " WARN: len('../') is assumed to be 3
+          let file.filename = max_dot_dot[ num_matches * 3 : ] .. rel_filename
+        endfor
+      endfor
+    endif
     " moved Unstaged and Staged sections before Untracked, etc, to get the old behaviour
     " FIXME: probably should add a global user variable to change between old/new
     call s:AddDiffSection(to, stat, 'Unstaged', unstaged)
@@ -4394,6 +4474,8 @@ function! s:DoAutocmdChanged(dir) abort
   return ''
 endfunction
 
+" unfortunately we can't call this from another buffer/window because s:StageInfo() and
+" fugitive#BufReadStatus() assumes that we're in a status buffer
 function! s:ReloadStatusBuffer() abort
   if get(b:, 'fugitive_type', '') !=# 'index' || !empty(get(b:, 'fugitive_loading'))
     return ''
@@ -4525,10 +4607,21 @@ augroup fugitive_status
         \ call s:ReloadWinStatus()
   autocmd TabEnter *
         \ call s:ReloadTabStatus()
+  " FIXME: doesn't update until the focus is changed to the status window
+  " NOTE: call s:ExpireStatus(-1) can be used instead but the status won't be updated if the
+  "       focus is already on the status window
+  autocmd DirChanged *
+        \ call s:ReloadStatusBuffer()
 augroup END
 
 function! s:StatusSectionFile(heading, filename) abort
   return get(get(get(get(b:, 'fugitive_status', {}), 'files', {}), a:heading, {}), a:filename, {})
+endfunction
+
+function! s:RevertToAbsolutePath(filepath) abort
+  let fullpath = getcwd() .. "/" .. a:filepath
+  let git_dir = s:Tree(FugitiveGitDir())
+  return substitute(fugitive#Path(fullpath)[strlen(git_dir) + 1 : ], '\\', '/', 'g')
 endfunction
 
 function! s:StageInfo(...) abort
@@ -4553,6 +4646,12 @@ function! s:StageInfo(...) abort
     endif
   endwhile
   let text = matchstr(getline(lnum), '^[A-Z?] \zs.*')
+  " NOTE: StagePatch() and StageInline() call StageInfo() but
+  "       StageDelete(), StageDiff() and Do() call s:Selection() instead
+  if b:show_relative_path == 1
+    " This fix is very similar to s:Selection()
+    let text = s:RevertToAbsolutePath(text)
+  endif
   let file = s:StatusSectionFile(heading, text)
   let relative = get(file, 'relative', len(text) ? [text] : [])
   return {'section': matchstr(heading, '^\u\l\+'),
@@ -4635,6 +4734,10 @@ function! s:Selection(arg1, ...) abort
       let results[-1].lnum = lnum
     elseif line =~# '^[A-Z?] '
       let text = matchstr(line, '^[A-Z?] \zs.*')
+      " for s:Selection()
+      if b:show_relative_path == 1
+        let text = s:RevertToAbsolutePath(text)
+      endif
       let file = s:StatusSectionFile(template.heading, text)
       let relative = get(file, 'relative', len(text) ? [text] : [])
       call add(results, extend(deepcopy(template), {
@@ -4688,6 +4791,11 @@ endfunction
 
 function! s:Do(action, visual) abort
   let line = getline('.')
+  " for s:do(); also relies on the change in s:Selection()
+  if b:show_relative_path == 1
+    let texts = split(line, ' ')
+    let line = texts[0] .. ' ' .. s:RevertToAbsolutePath(texts[1])
+  endif
   let reload = 0
   if !a:visual && !v:count && line =~# '^[A-Z][a-z]'
     let header = matchstr(line, '^\S\+\ze:')

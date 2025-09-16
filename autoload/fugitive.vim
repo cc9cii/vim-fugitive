@@ -6799,6 +6799,9 @@ let s:script_dirname = expand('<script>:p:h')
 " required (NOTE: we have to do that here rather than as part of :Git! command because by then
 " the colorscheme may have been changed already following :Gdiff, etc)
 function! s:github_look_on() abort
+  let s:number_pre = &number
+  let &number = 1 " apparently the same as :set number
+
   " save the current colorscheme and fugitive specific highlight details as long as
   " the current colorscheme is not github
   if g:colors_name != 'github'
@@ -6843,11 +6846,17 @@ function! s:diffthis() abort
   if !&diff
     let w:fugitive_diff_restore = 1
     diffthis
+"   FIXME: not sure why we don't need this here, maybe this function is only used in some
+"          special cases? i.e. more than one parent
+"   call s:github_look_on()
   endif
 endfunction
 
-" get back to the previous appearance - set the previously saved colorscheme but it seems that
-" we don't have to clear the temporary highlights set with hlset()
+" get back to the previous appearance - turn off line numbers from github-like diff, set the
+" previously saved colorscheme but it seems that we don't have to clear the temporary
+" highlights set with hlset()
+" NOTE: reverting the number setting for the buffers is done in s:diffoff_all() in order to check
+"       each of the diff windows in a loop
 function! s:github_look_off() abort
   if exists('s:colorscheme_pre')
   " let g:colors_name = s:colorscheme_pre " FIXME: not sure why this doesn't work
@@ -6869,7 +6878,10 @@ function! s:diffoff_all(dir) abort
     if getwinvar(nr, '&diff') && !empty(getwinvar(nr, 'fugitive_diff_restore'))
       call setwinvar(nr, 'fugitive_diff_restore', '')
 
+      " set number for the buffers
       let winid = win_getid(nr)
+      call win_execute(winid, 'set '.(s:number_pre ? '' : 'no').'number')
+
       if winid == s:orig_winid     "FIXME: maybe should check if it exists
         let orig_winnr = nr        " for use below
       else
@@ -6903,6 +6915,15 @@ function! s:diffoff_all(dir) abort
   diffoff!
 
   call s:github_look_off()
+  " not directly related but good enough to indicate s:github_look_on() was called
+  " (probably not necessary since we're calling s:github_look_off() anyway)
+  if exists('s:number_pre')
+    exe 'SignifyEnable'
+    if exists('s:orig_columns')
+      let &columns=s:orig_columns
+      unlet s:orig_columns
+    endif
+  endif
 endfunction
 
 function! s:IsConflicted() abort
@@ -7028,10 +7049,18 @@ function! fugitive#Diffsplit(autodir, keepfocus, mods, arg, ...) abort
     let w:fugitive_diff_restore = 1
 
     call s:github_look_on()
+    exe 'SignifyDisable'
     let mods = (autodir ? s:DiffModifier(2, empty(args) || args[0] =~# '^>') : '') . mods
     if &diffopt =~# 'vertical'
       let diffopt = &diffopt
       set diffopt-=vertical
+    endif
+    if mods =~? 'vertical'
+      " FIXME: can't remember why winwidth(0) was used rather than &columns?
+"     let s:orig_columns = winwidth(0)        " remember the window size
+"     let &columns=(winwidth(0) * 2 - 20) " roughly double with window size
+      let s:orig_columns = &columns      " remember the width
+      let &columns=(s:orig_columns * 2)  " double the size
     endif
 
     " NOTE: exiting from :Gdiff and :Git! dd
